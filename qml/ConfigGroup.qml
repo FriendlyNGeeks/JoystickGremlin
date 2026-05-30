@@ -61,7 +61,7 @@ ColumnLayout {
 
                     checked: model.value
 
-                    text: checked ? "On" : "Off"
+                    text: checked ? "True" : "False"
 
                     onToggled: () => { model.value = checked }
                 }

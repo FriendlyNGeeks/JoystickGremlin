@@ -14,21 +14,28 @@ import time
 import traceback
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 # Import QtMultimedia so pyinstaller doesn't miss it.
 from PySide6 import QtCore, QtGui, QtQml, QtQuick, QtWidgets
 
 import resources
 
+# Figure out the location of the code / executable. Native DLLs are loaded
+# before normal logging exists, so start from a writable folder to avoid DLL
+# startup side effects failing under Program Files.
+install_path = os.path.normcase(os.path.dirname(os.path.abspath(sys.argv[0])))
+userprofile_path = str((Path(os.getenv("userprofile")) / "Joystick Gremlin").resolve())
+Path(userprofile_path).mkdir(parents=True, exist_ok=True)
+os.chdir(userprofile_path)
+
 import dill
 import vjoy.vjoy
 from gremlin.config import Configuration
 from gremlin.types import PropertyType
 
-# Figure out the location of the code / executable and change the working
-# directory accordingly.
-install_path = os.path.normcase(os.path.dirname(os.path.abspath(sys.argv[0])))
+# Change the working directory to the code / executable location after the
+# native DLLs have loaded.
 os.chdir(install_path)
 
 # Setting some global QT configurations.
@@ -171,6 +178,35 @@ def register_config_options() -> None:
         "Use the dark mode UI (requires restart).", {}, True
     )
     cfg.register(
+        "global", "general", "start-minimized-to-tray",
+        PropertyType.Bool, False,
+        "Start Joystick Gremlin minimized to the system tray.", {}, False
+    )
+    cfg.register(
+        "global", "general", "startup-behavior",
+        PropertyType.Selection,
+        "System Tray" if cfg.value(
+            "global", "general", "start-minimized-to-tray"
+        ) else "Normal",
+        "Startup behavior.",
+        {"valid_options": ["Normal", "Minimized", "System Tray"]},
+        True
+    )
+    cfg.register(
+        "global", "general", "close-to-tray",
+        PropertyType.Bool, False,
+        "Hide Joystick Gremlin to the system tray when closing the main window.",
+        {},
+        False
+    )
+    cfg.register(
+        "global", "general", "close-behavior",
+        PropertyType.Bool, cfg.value("global", "general", "close-to-tray"),
+        "Close button should minimize to system tray.",
+        {},
+        True
+    )
+    cfg.register(
         "global", "general", "refresh-axis-on-activation",
         PropertyType.Bool, True,
         "Use known physical device state to perform actions using these values "
@@ -286,6 +322,12 @@ class JoystickGremlinApp(QtWidgets.QApplication):
             help="Start Joystick Gremlin minimized",
             action="store_true"
         )
+        parser.add_argument(
+            "--start-minimized-to-tray",
+            "--minimize-to-tray",
+            help="Start Joystick Gremlin minimized to the system tray",
+            action="store_true"
+        )
         cmd_args, qt_argv = parser.parse_known_args(argv)
 
         # Run the parent constructor with remaining arguments.
@@ -366,7 +408,12 @@ class JoystickGremlinApp(QtWidgets.QApplication):
 
         if args.enable:
             self.backend.activate_gremlin(True)
-        if args.start_minimized:
+        startup_behavior = Configuration().value(
+            "global", "general", "startup-behavior"
+        )
+        if args.start_minimized_to_tray or startup_behavior == "System Tray":
+            self.backend.minimizeToTray()
+        elif args.start_minimized or startup_behavior == "Minimized":
             self.backend.minimize()
 
     def initialize_qt(self) -> None:

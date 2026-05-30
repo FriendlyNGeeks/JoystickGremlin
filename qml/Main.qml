@@ -439,6 +439,9 @@ ApplicationWindow {
         if (backend.profileContainsUnsavedChanges) {
             _saveBeforeQuitDialog.open()
             close.accepted = false
+        } else if (backend.closeToTray) {
+            backend.minimizeToTray()
+            close.accepted = false
         }
     }
 

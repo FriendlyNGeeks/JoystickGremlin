@@ -15,8 +15,9 @@ import uuid
 
 from PySide6 import (
     QtCore,
-    QtQml,
     QtGui,
+    QtQml,
+    QtWidgets,
 )
 from PySide6.QtCore import (
     Property,
@@ -200,6 +201,8 @@ class Backend(QtCore.QObject):
         self.ui_state = UIState(self)
         self.process_monitor = process_monitor.ProcessMonitor()
         self.process_monitor.start()
+        self._tray_icon = None
+        self._tray_menu = None
 
         self.joystick_change_monitor = device_helpers.JoystickInputSignificant()
 
@@ -226,6 +229,7 @@ class Backend(QtCore.QObject):
         )
 
         self.profileChanged.emit()
+        self._create_system_tray()
 
     def _highlight_input(self, event: event_handler.Event) -> None:
         if not self.config.value("global", "general", "input-highlighting") \
@@ -273,6 +277,7 @@ class Backend(QtCore.QObject):
 
     @Slot()
     def emitConfigChanged(self) -> None:
+        self.propertyChanged.emit()
         signal.configChanged.emit()
         audio_player.AudioPlayer().refresh()
 
@@ -395,11 +400,90 @@ class Backend(QtCore.QObject):
             #     self.ui.devices.currentWidget().refresh()
             # self.ui.tray_icon.setIcon(QtGui.QIcon("gfx/icon.ico"))
         self.activityChanged.emit()
+        self._update_tray_icon()
 
     def minimize(self) -> None:
         """Minimizes the application to the taskbar."""
         root_window = self.engine.rootObjects()[0]
         root_window.setVisibility(QtGui.QWindow.Visibility.Minimized)
+
+    @Slot()
+    def minimizeToTray(self) -> None:
+        """Hides the application window, leaving it available in the tray."""
+        if self._tray_icon is None or not self._tray_icon.isVisible():
+            self.minimize()
+            return
+
+        self._root_window().hide()
+
+    @Slot()
+    def restoreFromTray(self) -> None:
+        """Restores the application window from the system tray."""
+        root_window = self._root_window()
+        root_window.show()
+        root_window.raise_()
+        root_window.requestActivate()
+
+    @Property(bool, notify=propertyChanged)
+    def closeToTray(self) -> bool:
+        """Returns whether closing the main window should hide it to tray."""
+        return self.config.value("global", "general", "close-behavior")
+
+    def _root_window(self) -> QtGui.QWindow:
+        return self.engine.rootObjects()[0]
+
+    def _create_system_tray(self) -> None:
+        """Creates the system tray icon and menu."""
+        if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
+            logging.getLogger("system").warning(
+                "System tray is not available; tray minimization disabled."
+            )
+            return
+
+        self._tray_menu = QtWidgets.QMenu()
+        show_action = QtGui.QAction("Show / Hide", self)
+        show_action.triggered.connect(self._toggle_tray_window)
+        self._tray_menu.addAction(show_action)
+
+        self._tray_toggle_action = QtGui.QAction("Start profile", self)
+        self._tray_toggle_action.triggered.connect(self.toggleActiveState)
+        self._tray_menu.addAction(self._tray_toggle_action)
+
+        quit_action = QtGui.QAction("Quit", self)
+        quit_action.triggered.connect(QtWidgets.QApplication.quit)
+        self._tray_menu.addAction(quit_action)
+
+        self._tray_icon = QtWidgets.QSystemTrayIcon(self)
+        self._tray_icon.setContextMenu(self._tray_menu)
+        self._tray_icon.activated.connect(self._tray_icon_activated)
+        self._update_tray_icon()
+        self._tray_icon.show()
+
+    def _update_tray_icon(self) -> None:
+        """Updates the system tray icon and actions to match runtime state."""
+        if self._tray_icon is None:
+            return
+
+        icon_name = "gfx/icon_active.ico" if self.gremlinActive else "gfx/icon.png"
+        self._tray_icon.setIcon(QtGui.QIcon(util.resource_path(icon_name)))
+        self._tray_toggle_action.setText(
+            "Stop profile" if self.gremlinActive else "Start profile"
+        )
+
+    @Slot(QtWidgets.QSystemTrayIcon.ActivationReason)
+    def _tray_icon_activated(
+        self,
+        reason: QtWidgets.QSystemTrayIcon.ActivationReason
+    ) -> None:
+        if reason == QtWidgets.QSystemTrayIcon.ActivationReason.Trigger:
+            self._toggle_tray_window()
+
+    def _toggle_tray_window(self) -> None:
+        root_window = self._root_window()
+        if root_window.isVisible():
+            self.minimizeToTray()
+        else:
+            self.restoreFromTray()
 
     @Slot(InputIdentifier, result=int)
     def getActionCount(self, identifier: InputIdentifier) -> int:

@@ -1,10 +1,13 @@
 """Generate the wix XML file for the setup generation."""
 
 import argparse
+import hashlib
+import json
 import os
-import uuid
-import sys
 import pickle
+import re
+import sys
+import uuid
 from xml.dom import minidom
 from xml.etree import ElementTree
 
@@ -45,7 +48,22 @@ def sanitize_path(path):
     :param path path to sanitize
     :return sanitized file path
     """
-    return path.replace("\\", "__").replace("-", "_")
+    path = path.replace("\\", "__").replace("-", "_")
+    return re.sub(r"[^A-Za-z0-9_.]", "_", path)
+
+
+def wix_id(prefix, path):
+    """Creates a stable WiX identifier within the v3 length limit."""
+    sanitized = sanitize_path(path).replace(".", "_")
+    digest = hashlib.sha1(path.encode("utf-8")).hexdigest()[:12]
+    suffix_len = max(0, 72 - len(prefix) - len(digest) - 2)
+    suffix = sanitized[-suffix_len:] if suffix_len else ""
+    return f"{prefix}_{digest}_{suffix}".rstrip("_")
+
+
+def directory_id(path):
+    """Creates a stable directory identifier for a path."""
+    return wix_id("dir", path)
 
 
 def create_data_for_file(path):
@@ -56,8 +74,10 @@ def create_data_for_file(path):
     """
     return {
         "component_guid": uuid.uuid4(),
-        "component_id": "component_{}".format(sanitize_path(path)),
-        "file_id": "file_{}".format(sanitize_path(path)),
+        "component_id": wix_id("component", path),
+        "file_id": "file_joystick_gremlin.exe"
+            if path == "joystick_gremlin.exe"
+            else wix_id("file", path),
         "file_source": path
     }
 
@@ -122,19 +142,19 @@ def create_folder_structure(folder_list):
     for folder in folder_list:
         dirs = folder.split("\\")
         for i in range(len(dirs)):
-            path = "__".join(dirs[:i+1])
+            path = directory_id(os.path.join(*dirs[:i+1]))
             if path not in structure:
                 structure[path] = create_node(
                     "Directory",
                     {"Id": path, "Name": dirs[i]}
                 )
                 if i > 0:
-                    parent_path = "__".join(dirs[:i])
+                    parent_path = directory_id(os.path.join(*dirs[:i]))
                     structure[parent_path].append(structure[path])
 
         # Link top level folders to the install folder
         if len(dirs) == 1:
-            structure["jg"].append(structure[dirs[0]])
+            structure["jg"].append(structure[directory_id(dirs[0])])
 
     return structure
 
@@ -162,9 +182,11 @@ def add_file_nodes(structure, data):
         c_node.append(f_node)
 
         # Attach component node to the proper directory node
-        parent = sanitize_path(os.path.dirname(path))
-        if len(parent) == 0:
+        parent_path = os.path.dirname(path)
+        if len(parent_path) == 0:
             parent = "jg"
+        else:
+            parent = directory_id(parent_path)
         structure[parent].append(c_node)
 
 
@@ -206,6 +228,9 @@ def create_document():
 
     :return top level document
     """
+    with open("version.json") as version_file:
+        version = json.load(version_file)["version"]
+
     doc = ElementTree.Element("Wix")
     doc.set("xmlns", "http://schemas.microsoft.com/wix/2006/wi")
 
@@ -230,11 +255,11 @@ def create_document():
             # "Id": "5598cb71-2825-4a78-8f4b-682aefd14323", # 11.0.0
             # "Id": "290a3110-0745-48d6-93d2-d954cb584b6f", # 12.0.0
             # "Id": "6019660b-26bd-430b-9b95-ca6a55201060",  # 13.0.0
-            "Id": "0dad4221-c8cf-4424-8dcd-3886274e89ef", # 13.1.0 - 13.3.0
+            "Id": "*",
             "UpgradeCode": "0464914b-97da-4889-8699-bcde4e767517",
             "Language": "1033",
             "Codepage": "1252",
-            "Version": "13.1.0"
+            "Version": version
         })
     mug = create_node("MajorUpgrade",
         {
@@ -247,7 +272,7 @@ def create_document():
         {
             "Id": "*",
             "Keywords": "Installer",
-            "Description": "Joystick Gremlin R13.1 Installer",
+            "Description": f"Joystick Gremlin R{version} Installer",
             "Manufacturer": "H2IK",
             "InstallerVersion": "100",
             "Languages": "1033",
@@ -411,7 +436,7 @@ def create_shortcuts(doc, root, product_node):
     product = doc.find("Product")
     product.append(create_node(
         "Icon",
-        {"Id": "icon.ico", "SourceFile": "joystick_gremlin\gfx\icon.ico"}
+        {"Id": "icon.ico", "SourceFile": r"joystick_gremlin\_internal\gfx\icon.ico"}
     ))
 
     # Create shortcut folder
@@ -445,7 +470,7 @@ def create_shortcuts(doc, root, product_node):
         "RegistryValue",
         {
             "Root": "HKCU",
-            "Key": "Software\H2IK\JoystickGremlin",
+            "Key": r"Software\H2IK\JoystickGremlin",
             "Name": "installed",
             "Type": "integer",
             "Value": "1",
@@ -491,6 +516,10 @@ def main():
     for path in file_list:
         if path not in data:
             data[path] = create_data_for_file(path)
+        else:
+            updated_entry = create_data_for_file(path)
+            updated_entry["component_guid"] = data[path]["component_guid"]
+            data[path] = updated_entry
     paths_to_delete = []
     for path in data.keys():
         if path not in file_list:

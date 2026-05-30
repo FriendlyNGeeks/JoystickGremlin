@@ -58,3 +58,59 @@ Abbreviated instructions from the [official documentation](https://python-poetry
 
 - Restart VS Code for the new environment to be picked up
 - Select the newly created Poetry virtual environment as the project's interpreter
+
+### Building first time
+
+From a fresh checkout on Windows:
+
+1. Install Python 3.13.x and Poetry.
+2. Install dependencies:
+   ```powershell
+   poetry install
+   ```
+3. Build the one-folder executable:
+   ```powershell
+   poetry run pyinstaller -y --clean joystick_gremlin.spec
+   ```
+4. Build the MSI installer:
+   ```powershell
+   poetry run python generate_wix.py
+   copy /Y joystick_gremlin.wxs dist\joystick_gremlin.wxs
+   cd dist
+   candle.exe joystick_gremlin.wxs
+   light.exe -ext WixUIExtension joystick_gremlin.wixobj
+   cd ..
+   ```
+
+The executable folder is written to `dist\joystick_gremlin`, and the installer
+is written to `dist\joystick_gremlin.msi`.
+
+If WiX is not installed system-wide, install or unpack WiX v3 so that
+`candle.exe` and `light.exe` are on `PATH`. This repository also supports a
+local no-admin WiX v3 package at `.tools\wix\pkg\tools`; `deploy.bat` checks
+that location before falling back to `C:\Program Files (x86)\WiX Toolset`.
+
+#### Frozen build errors
+
+If the built MSI launches with:
+
+```text
+Failed to load dynlib/dll ... _internal\dill.dll
+OSError: [WinError 1114] A dynamic link library (DLL) initialization routine failed
+```
+
+the DLL was found, but its initialization failed. Build agents should verify
+that the app loads native DLLs from a writable working directory before
+switching back to the install directory for resources. Program Files is not a
+safe working directory for native DLL startup side effects.
+
+If the built app launches with:
+
+```text
+ImportError: DLL load failed while importing QtTextToSpeech: The specified module could not be found.
+```
+
+`QtTextToSpeech.pyd` is present but one of its dependent DLLs is missing. Build
+agents should inspect `QtTextToSpeech.pyd` and `Qt6TextToSpeech.dll`
+dependencies and ensure `Qt6Multimedia.dll` is bundled. Do not exclude
+`Qt6Multimedia.dll` from `joystick_gremlin.spec`.

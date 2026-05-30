@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+import sys
 
 # Properly enumerate all files required for the action_plugins and
 # container_plugins system.
@@ -10,6 +11,22 @@ for root, _, files in os.walk("action_plugins"):
         if fname.endswith(".pyc"):
             continue
         action_plugins_files.append((os.path.join(root, fname), root))
+
+
+def find_runtime_dll(dll_name):
+    """Finds a runtime DLL in common Python environment locations."""
+    candidates = [
+        os.path.join(sys.prefix, dll_name),
+        os.path.join(sys.base_prefix, dll_name),
+        os.path.join(sys.prefix, "Lib", "site-packages", "PySide6", dll_name),
+        os.path.join(sys.prefix, "Lib", "site-packages", "shiboken6", dll_name),
+        os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", dll_name),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    raise FileNotFoundError(f"Unable to locate required runtime DLL: {dll_name}")
+
 
 datas = [
     ("gfx", "gfx"),
@@ -21,6 +38,7 @@ datas.extend(action_plugins_files)
 binaries = [
     ("vjoy/vJoyInterface.dll", "."),
     ("dill/dill.dll", "."),
+    (find_runtime_dll("msvcp140.dll"), "."),
 ]
 
 # List all action plugin code files by their import name as pyinstaller
@@ -98,7 +116,6 @@ to_exclude = [
     "Qt6DataVisualizationQml.dll",
     "Qt6Graphs.dll",
     "Qt6Location.dll",
-    "Qt6Multimedia.dll",
     "Qt6MultimediaQuick.dll",
     "Qt6Pdf.dll",
     "Qt6PdfQuick.dll",

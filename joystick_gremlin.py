@@ -14,10 +14,10 @@ import time
 import traceback
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # Import QtMultimedia so pyinstaller doesn't miss it.
-from PySide6 import QtCore, QtGui, QtQml, QtQuick, QtWidgets
+from PySide6 import QtCore, QtGui, QtNetwork, QtQml, QtQuick, QtWidgets
 
 import resources
 
@@ -25,7 +25,9 @@ import resources
 # before normal logging exists, so start from a writable folder to avoid DLL
 # startup side effects failing under Program Files.
 install_path = os.path.normcase(os.path.dirname(os.path.abspath(sys.argv[0])))
-userprofile_path = str((Path(os.getenv("userprofile")) / "Joystick Gremlin").resolve())
+userprofile_path = str((
+    Path(os.getenv("userprofile", "")) / "Joystick Gremlin"
+).resolve())
 Path(userprofile_path).mkdir(parents=True, exist_ok=True)
 os.chdir(userprofile_path)
 
@@ -303,9 +305,12 @@ def update_action_priorities() -> None:
     cfg.set(*key, priorities)
 
 
+SINGLE_INSTANCE_SERVER_NAME = "joystick-gremlin"
+
+
 class JoystickGremlinApp(QtWidgets.QApplication):
 
-    def __init__(self, argv: List[str]) -> None:
+    def __init__(self, argv: list[str]) -> None:
         # Parse command line arguments.
         parser = argparse.ArgumentParser()
         parser.add_argument(
@@ -332,6 +337,11 @@ class JoystickGremlinApp(QtWidgets.QApplication):
 
         # Run the parent constructor with remaining arguments.
         super().__init__(qt_argv)
+        self._single_instance_server = QtNetwork.QLocalServer(self)
+        self._single_instance_connections: list[QtNetwork.QLocalSocket] = []
+        self.should_exit = not self._acquire_single_instance()
+        if self.should_exit:
+            return
 
         # Initialize various components.
         configure_loggers()
@@ -393,6 +403,73 @@ class JoystickGremlinApp(QtWidgets.QApplication):
         # Run UI.
         self.syslog.info("Gremlin UI launching")
         self.aboutToQuit.connect(shutdown_cleanup)
+
+    def _acquire_single_instance(self) -> bool:
+        """Claims single-instance ownership or wakes the existing instance."""
+        socket = QtNetwork.QLocalSocket(self)
+        socket.connectToServer(SINGLE_INSTANCE_SERVER_NAME)
+        if socket.waitForConnected(250):
+            socket.write(b"show")
+            socket.flush()
+            socket.waitForBytesWritten(250)
+            socket.disconnectFromServer()
+            return False
+
+        QtNetwork.QLocalServer.removeServer(SINGLE_INSTANCE_SERVER_NAME)
+        if not self._single_instance_server.listen(SINGLE_INSTANCE_SERVER_NAME):
+            logging.getLogger("system").error(
+                "Failed to create single-instance server: %s",
+                self._single_instance_server.errorString()
+            )
+            return True
+
+        self._single_instance_server.newConnection.connect(
+            self._handle_single_instance_connection
+        )
+        return True
+
+    @QtCore.Slot()
+    def _handle_single_instance_connection(self) -> None:
+        """Handles a launch attempt from a later Gremlin process."""
+        while self._single_instance_server.hasPendingConnections():
+            socket = self._single_instance_server.nextPendingConnection()
+            socket.readyRead.connect(
+                lambda socket=socket: self._process_single_instance_socket(
+                    socket
+                )
+            )
+            socket.disconnected.connect(socket.deleteLater)
+            self._single_instance_connections.append(socket)
+            if socket.bytesAvailable() > 0:
+                self._process_single_instance_socket(socket)
+
+    def _process_single_instance_socket(
+        self,
+        socket: QtNetwork.QLocalSocket
+    ) -> None:
+        """Processes a wake message from a secondary launch socket."""
+        message = bytes(socket.readAll().data()).decode(
+            "utf-8",
+            "ignore"
+        ).strip()
+        if message == "show":
+            self.show_existing_instance()
+        self._single_instance_connections = [
+            connection for connection in self._single_instance_connections
+            if connection != socket
+        ]
+        socket.disconnectFromServer()
+
+    def show_existing_instance(self) -> None:
+        """Shows and activates Gremlin's existing main window."""
+        if not hasattr(self, "engine") or not self.engine.rootObjects():
+            return
+
+        root_window = cast(QtGui.QWindow, self.engine.rootObjects()[0])
+        root_window.show()
+        root_window.setVisibility(QtGui.QWindow.Visibility.Windowed)
+        root_window.raise_()
+        root_window.requestActivate()
 
     def process_cmd_args(self, args: argparse.Namespace) -> None:
         # Load the profile specified by the user on the command line, otherwise
@@ -471,7 +548,9 @@ class JoystickGremlinApp(QtWidgets.QApplication):
         QtCore.QDir.addSearchPath("qml", gremlin.util.resource_path("qml/"))
 
         self.cfg = Configuration()
-        user_plugins_path = Path(self.cfg.value("global", "general", "plugin-directory"))
+        user_plugins_path = Path(
+            self.cfg.value("global", "general", "plugin-directory")
+        )
         if user_plugins_path.is_dir():
             QtCore.QDir.addSearchPath(
                 "user_plugins",
@@ -499,6 +578,9 @@ class JoystickGremlinApp(QtWidgets.QApplication):
 def main() -> int:
     # Create Joystick Gremlin instance and run it.
     app = JoystickGremlinApp(sys.argv)
+    if app.should_exit:
+        return 0
+
     app.exec()
     logging.getLogger("system").info("Terminating Gremlin")
 

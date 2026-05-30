@@ -15,3 +15,5 @@
   `Normal`, `Minimized`, or `System Tray`.
 - Added a `Close behavior` toggle controlling whether the close button
   minimizes the app to the system tray.
+- Added single-instance startup handling so launching Joystick Gremlin again
+  restores the existing window and exits the new process.
